@@ -1,0 +1,11 @@
+
+Do NOT enable SPI in Raspberry Pi boot config file 
+
+sudo dtoverlay at86rf233
+
+/home/godzilla/making/linux/arch/arm/boot/dts/overlays/at86rf233-overlay.dts
+
+
+Enable verbose output for make
+make V=1
+

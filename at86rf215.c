@@ -1,5 +1,9 @@
 #include <linux/module.h>
+#include <linux/of_gpio.h>
+#include <linux/printk.h>
 #include <linux/platform_device.h>
+#include <linux/spi/at86rf230.h>
+#include <linux/spi/spi.h>
 #include <net/mac802154.h>
 
 struct at86rf215_private {
@@ -40,10 +44,86 @@ static const struct ieee802154_ops at86rf215_ieee802154_ops = {
 	.set_channel = at86rf215_set_channel
 };
 
-static int at86rf215_probe(struct platform_device *pdev)
+/* Retrieve RSTN pin number from device tree */
+static int at86rf215_get_platform_data(struct spi_device *spi, int *rstn_pin_num)
 {
-	struct ieee802154_hw *hw;
+	if (!spi->dev.of_node) {
+		dev_err(&spi->dev, "no device tree node found!\n");
+		return -ENOENT;
+	}
+
+	*rstn_pin_num = of_get_named_gpio(spi->dev.of_node, "reset-gpio", 0);
+
+
+	return 0;
+}
+
+static int at86rf215_probe(struct spi_device *spi)
+{
+#if 1
+	int rstn_pin_num = 0;
+#define RG_RF_PN                        (0x0D)
+#define RG_RF_VN                        (0x0E)
+	u8 cmd1[3] = {0, RG_RF_PN, 0xff};
+	u8 cmd2[3] = {0, RG_RF_VN, 0xff};
+	u8 rx_buf[3] = {0};
+	struct spi_message msg;
+	struct spi_transfer xfer = {
+		.len = 3,
+		.tx_buf = &cmd1[0],
+		.rx_buf = &rx_buf[0]
+	};
+
+	/* Retrieve RSTN pin number */ 
+	if (at86rf215_get_platform_data(spi, &rstn_pin_num) < 0 ||
+		!gpio_is_valid(rstn_pin_num)) {
+		return -1;
+	}
+
+	dev_dbg(&spi->dev, "RSTN pin number is %d\n", rstn_pin_num);
+
+	/* Configure as output, active low */
+	if (devm_gpio_request_one(&spi->dev, rstn_pin_num,
+				  GPIOF_OUT_INIT_HIGH, "reset") < 0) {
+		
+	}
+
+	/*
+	 * Reset transceiver. The pulse width at pin RSTN must last at least
+	 * 625ns
+	 */
+	/* 
+	 * udelay(1);
+	 * gpio_set_value_cansleep(rstn_pin_num, 0);
+	 * udelay(1);
+	 * gpio_set_value_cansleep(rstn_pin_num, 1);
+	 */
+
+	/* 
+	 * spi_write(spi, cmd1, 3);
+	 * usleep_range(500, 1000);
+	 * spi_write(spi, cmd2, 3);
+	 */
+
+	spi_message_init(&msg);
+
+	/* Read transceiver Part Number */
+	xfer.tx_buf = &cmd1[0];
+	spi_message_add_tail(&xfer, &msg);
+	spi_sync(spi, &msg);
+
+	print_hex_dump_bytes("", DUMP_PREFIX_NONE, rx_buf, 3);
+
+	/* FIXME: the added code below leads to kernel crash */
+	/* Read transceiver Version Number */
+	xfer.tx_buf = &cmd2[0];
+	spi_message_add_tail(&xfer, &msg);
+	spi_sync(spi, &msg);
+
+	print_hex_dump_bytes("", DUMP_PREFIX_NONE, rx_buf, 3);
+#else
 	int ret = 0;
+	struct ieee802154_hw *hw;
 
 	if (priv != NULL)
 	{
@@ -58,62 +138,51 @@ static int at86rf215_probe(struct platform_device *pdev)
 	priv->hw = hw;
 
 	ieee802154_random_extended_addr(&hw->phy->perm_extended_addr);
-
+	
 	ret = ieee802154_register_hw(hw);
 	if (ret)
 		ieee802154_free_hw(hw);
-
-	return ret;
-}
-
-static int at86rf215_remove(struct platform_device *pdev)
-{
-	ieee802154_unregister_hw(priv->hw);
-	ieee802154_free_hw(priv->hw);
-
-	priv = NULL;
+#endif
 
 	return 0;
 }
 
-static struct platform_driver at86rf215_driver = {
+static int at86rf215_remove(struct spi_device *spi)
+{
+#if 1
+	priv = NULL;
+#else
+	ieee802154_unregister_hw(priv->hw);
+	ieee802154_free_hw(priv->hw);
+
+	priv = NULL;
+#endif
+	return 0;
+}
+
+static const struct of_device_id at86rf215_of_match[] = {
+	{ .compatible = "atmel,at86rf233", },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, at86rf215_of_match);
+
+static const struct spi_device_id at86rf215_device_id[] = {
+	{ .name = "at86rf233", },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, at86rf215_device_id);
+
+static struct spi_driver at86rf215_driver = {
+	.id_table = at86rf215_device_id,
 	.driver = {
-		.name = "at86rf215",
+		.of_match_table = of_match_ptr(at86rf215_of_match),
+		.name = "at86rf233"
 	},
 	.probe = at86rf215_probe,
 	.remove = at86rf215_remove
 };
 
-static struct platform_device *at86rf215_device;
+module_spi_driver(at86rf215_driver);
 
-static __init int at86rf215_init(void)
-{
-	int ret;
-
-	ret = platform_driver_register(&at86rf215_driver);
-	if (ret < 0) {
-		printk(KERN_ERR "can't register AT86RF215 driver: %d\n", ret);
-		return ret;
-	}
-
-	at86rf215_device = platform_device_register_simple("at86rf215", -1,
-							   NULL, 0);
-	if (IS_ERR(at86rf215_device)) {
-		printk(KERN_ERR "can't register AT86RF215 device\n");
-		platform_driver_unregister(&at86rf215_driver);
-		return PTR_ERR(at86rf215_device);
-	}
-
-	return 0;
-}
-
-static __exit void at86rf215_exit(void)
-{
-	platform_device_unregister(at86rf215_device);
-	platform_driver_unregister(&at86rf215_driver);
-}
-
-module_init(at86rf215_init);
-module_exit(at86rf215_exit);
-
+MODULE_DESCRIPTION("Atmel AT86RF215 radio transceiver driver");
 MODULE_LICENSE("GPL v2");
