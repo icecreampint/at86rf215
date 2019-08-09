@@ -2,12 +2,23 @@
 #include <linux/of_gpio.h>
 #include <linux/printk.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/spi/at86rf230.h>
 #include <linux/spi/spi.h>
 #include <net/mac802154.h>
 
 struct at86rf215_private {
+	struct regmap *regmap;
 	struct ieee802154_hw *hw;
+};
+
+static const struct regmap_config at86rf215_regmap_config = {
+	.reg_bits = 16,
+	.val_bits = 8,
+	.read_flag_mask = 0x0,		/* [0|0|A|A|A|A|A|A|A|A|A|A|A|A|A|A] */
+	.write_flag_mask = 0x80,	/* [1|0|A|A|A|A|A|A|A|A|A|A|A|A|A|A] */
+	.cache_type = REGCACHE_RBTREE,
+	.max_register = 0x3FFE,
 };
 
 static struct at86rf215_private *priv;
