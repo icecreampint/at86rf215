@@ -44,7 +44,7 @@ CROSS_COMPILE := arm-linux-gnueabihf-
 
 PWD       := $(shell pwd)
 
-obj-m	:= at86rf215.o
+obj-m	:= at86rf215.o ping.o
 
 default:
 	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -C $(KERNELDIR) M=$(PWD) modules

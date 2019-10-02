@@ -76,7 +76,7 @@ static int at86rf215_probe(struct spi_device *spi)
 #define RG_RF_PN                        (0x0D)
 #define RG_RF_VN                        (0x0E)
 	u8 cmd1[3] = {0, RG_RF_PN, 0xff};
-	u8 cmd2[3] = {0, RG_RF_VN, 0xff};
+	/* u8 cmd2[3] = {0, RG_RF_VN, 0xff}; */
 	u8 rx_buf[3] = {0};
 	struct spi_message msg;
 	struct spi_transfer xfer = {
@@ -127,11 +127,13 @@ static int at86rf215_probe(struct spi_device *spi)
 
 	/* FIXME: the added code below leads to kernel crash */
 	/* Read transceiver Version Number */
-	xfer.tx_buf = &cmd2[0];
-	spi_message_add_tail(&xfer, &msg);
-	spi_sync(spi, &msg);
-
-	print_hex_dump_bytes("", DUMP_PREFIX_NONE, rx_buf, 3);
+	/*
+	 * xfer.tx_buf = &cmd2[0];
+	 * spi_message_add_tail(&xfer, &msg);
+	 * spi_sync(spi, &msg);
+	 *
+	 * print_hex_dump_bytes("", DUMP_PREFIX_NONE, rx_buf, 3);
+	 */
 #else
 	int ret = 0;
 	struct ieee802154_hw *hw;
