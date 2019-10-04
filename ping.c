@@ -2,10 +2,12 @@
 #include <linux/of_gpio.h>
 #include <linux/printk.h>
 /* #include <linux/platform_device.h> */
-/* #include <linux/regmap.h> */
+#include <linux/regmap.h>
 /* #include <linux/spi/at86rf230.h> */
 #include <linux/spi/spi.h>
 /* #include <net/mac802154.h> */
+
+#include "reg.h"
 
 static struct timer_list ping_timer;
 
@@ -14,8 +16,96 @@ static int rstn_pin_num;
 
 static int at86rf215_cookie = 0xbabef00d;
 
+/* Registers whose value can be written */
+static bool at86rf215_writeable_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case RG_RF09_IRQM:
+	case RG_RF09_CS:
+	case RG_RF09_CCF0L:
+	case RG_RF09_CCF0H:
+	case RG_RF09_CNL:
+	case RG_RF09_CNM:
+	case RG_RF09_RXBWC:
+	case RG_RF09_RXDFE:
+	case RG_RF09_EDD:
+	case RG_RF09_RNDV:
+	case RG_RF09_TXCUTC:
+	case RG_RF09_TXDFE:
+	case RG_RF09_PAC:
+	case RG_BBC0_IRQM:
+	case RG_BBC0_PC:
+	case RG_BBC0_OFDMPHRTX:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/* Registers whose value can be read */
+static bool at86rf215_readable_reg(struct device *dev, unsigned int reg)
+{
+	bool ret;
+
+	ret = at86rf215_writeable_reg(dev, reg);
+	if (ret)
+		return ret;
+
+	switch (reg) {
+	case RG_RF_PN:
+	case RG_RF_VN:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/* Registers whose value can't be cached */
+static bool at86rf215_volatile_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case RG_RF09_STATE:
+	case RG_RF09_RSSI:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/* Registers whose value should not be read outside a call from the driver */
+/* The IRQ status registers are cleared automatically by reading the corresponding register via SPI. */
+static bool at86rf215_precious_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case RG_RF09_IRQS:
+	case RG_BBC0_IRQS:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/* AT86RF215 register map configuration */
+static const struct regmap_config at86rf215_regmap_config = {
+	.reg_bits = 16,
+	.val_bits = 8,
+	.writeable_reg = at86rf215_writeable_reg,
+	.readable_reg = at86rf215_readable_reg,
+	.volatile_reg = at86rf215_volatile_reg,
+	.precious_reg = at86rf215_precious_reg,
+	.read_flag_mask = 0x0,		/* [0|0|x|x|x|x|x|x|x|x|x|x|x|x|x|x] */
+	.write_flag_mask = 0x80,	/* [1|0|x|x|x|x|x|x|x|x|x|x|x|x|x|x] */
+	.cache_type = REGCACHE_RBTREE,
+	.max_register = 0x3FFE,
+};
+
 /* Retrieve RSTN pin number from device tree */
-static int at86rf215_get_platform_data(struct spi_device *spi, int *rstn_pin_num)
+static int at86rf215_get_platform_data(struct spi_device *spi,
+				       int *rstn_pin_num)
 {
 	if (!spi->dev.of_node) {
 		dev_err(&spi->dev, "no device tree node found!\n");
@@ -41,6 +131,7 @@ static void ping_process(struct timer_list *t)
 static int at86rf215_probe(struct spi_device *spi)
 {
 	unsigned long flags;
+	struct regmap *regmap;
 
 	if (!spi->irq) {
 		dev_err(&spi->dev, "no IRQ number\n");
@@ -62,6 +153,19 @@ static int at86rf215_probe(struct spi_device *spi)
 				  GPIOF_OUT_INIT_HIGH, "rstn") < 0) {
 		return -1;
 	}
+
+	/* TODO: reset transceiver by asserting RTSN low */
+
+	/* TODO: initialize register map */
+	regmap = devm_regmap_init_spi(spi, &at86rf215_regmap_config);
+	if (IS_ERR(regmap)) {
+		int ret = PTR_ERR(regmap);
+		dev_err(&spi->dev, "can't alloc regmap 0x%x\n", ret);
+		devm_gpio_free(&spi->dev, rstn_pin_num);
+		return -1;
+	}
+
+	/* TODO: datasheet section 7.2.1 common configuration */
 
 	/* TODO: read IRQ status reg to reset line */
 	flags = irq_get_trigger_type(spi->irq);
