@@ -9,12 +9,66 @@
 
 #include "reg.h"
 
+enum {
+	AT86RF215 = 0x34,
+	AT86RF215IQ,
+	AT86RF215M
+};
+
+static const struct trx_id {
+	unsigned char part_number;
+	const char *description;
+} trx_ids[] = {
+	{AT86RF215, "AT86RF215"},
+	{AT86RF215IQ, "AT86RF215IQ"},
+	{AT86RF215M, "AT86RF215M"},
+};
+#define num_of_trx_ids (sizeof(trx_ids) / sizeof(trx_ids[0]))
+
+enum {
+	RF_DUMMY1 = 0x0,
+	RF_DUMMY2,
+	RF_TRXOFF = 0x2,	/* Transceiver off, SPI active */
+	RF_TXPREP,		/* Transmit preparation */
+	RF_TX,			/* Transmit */
+	RF_RX,			/* Receive */
+	RF_TRANSITION,		/* State transition in progress */
+	RF_RESET,		/* Transceiver is in state RESET or SLEEP */
+	RF_MAX
+};
+
+static const char *trx_state_descs[RF_MAX] = {
+	"DUMMY1",
+	"DUMMY2",
+	"TRXOFF",
+	"TXPREP",
+	"TX",
+	"RX",
+	"TRANSITION",
+	"RESET"
+};
+
+static const struct trx_state {
+	unsigned char value;
+	const char *description;
+} trx_states[] = {
+	{RF_TRXOFF, "TRXOFF"},
+	{RF_TXPREP, "TXPREP"},
+	{RF_TX, "TX"},
+	{RF_RX, "RX"},
+	{RF_TRANSITION, "TRANSITION"},
+	{RF_RESET, "RESET"}
+};
+#define num_of_trx_states (sizeof(trx_states) / sizeof(trx_states[0])
+
 static struct timer_list ping_timer;
 
 /* RSTN pin number */
 static int rstn_pin_num;
 
-static int at86rf215_cookie = 0xbabef00d;
+/* static int at86rf215_cookie = 0xbabef00d; */
+
+struct regmap *regmap;
 
 /* Registers whose value can be written */
 static bool at86rf215_writeable_reg(struct device *dev, unsigned int reg)
@@ -55,6 +109,8 @@ static bool at86rf215_readable_reg(struct device *dev, unsigned int reg)
 	switch (reg) {
 	case RG_RF_PN:
 	case RG_RF_VN:
+	case RG_RF09_STATE:
+	case RG_RF09_RSSI:
 		return true;
 
 	default:
@@ -62,10 +118,12 @@ static bool at86rf215_readable_reg(struct device *dev, unsigned int reg)
 	}
 }
 
-/* Registers whose value can't be cached */
+/* Registers whose value shouldn't be cached */
 static bool at86rf215_volatile_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
+	case RG_RF_PN:		/* TODO: remove */
+	case RG_RF_VN:		/* TODO: remove */
 	case RG_RF09_STATE:
 	case RG_RF09_RSSI:
 		return true;
@@ -117,21 +175,107 @@ static int at86rf215_get_platform_data(struct spi_device *spi,
 	return 0;
 }
 
+#if 0
 static irqreturn_t at86rf215_irq_handler(int irq, void *data)
 {
 	return IRQ_HANDLED;
 }
+#endif
 
 static void ping_process(struct timer_list *t)
 {
-	pr_debug("ping\n");
+	int ret, i;
+	unsigned int val;
+	const char *description = NULL;
+
+	ret = regmap_read(regmap, RG_RF_PN, &val);
+	if (ret < 0) {
+		pr_err("can't read transceiver part number\n");
+		return;
+	}
+
+	for (i = 0; i < num_of_trx_ids; i++)
+	{
+		if (trx_ids[i].part_number == val) {
+			description = trx_ids[i].description;
+			break;
+		}
+	}
+
+	if (description == NULL) {
+		pr_err("unknown transceiver part number 0x%x\n", val);
+		return;
+	}
+
+	ret = regmap_read(regmap, RG_RF_VN, &val);
+	if (ret < 0) {
+		pr_err("can't read transceiver version number\n");
+		return;
+	}
+	pr_debug("detected %sv%d transceiver\n", description, val);
+
+	ret = regmap_read(regmap, RG_RF09_STATE, &val);
+	if (ret < 0) {
+		pr_err("can't read transceiver's current state\n");
+		return;
+	}
+	pr_debug("transceiver's current state is %s\n", trx_state_descs[val]);
+
 	mod_timer(&ping_timer, jiffies + msecs_to_jiffies(5000));
 }
 
+#if 0
+/* Register read data structures */
+
+static u8 rx_buf[3];
+static u8 tx_buf[3];
+static struct spi_transfer reg_read_xfer = {
+	.len = 3,
+	.tx_buf = &tx_buf[0],
+	.rx_buf = &rx_buf[0]
+};
+
+static void reg_read_complete (void *context)
+{
+	printk("peekaboo\n");
+}
+
+static struct spi_message reg_read_message;
+
+static void reg_read_message_init(void)
+{
+	spi_message_init(&reg_read_message);
+	reg_read_message.complete = reg_read_complete;
+	spi_message_add_tail(&reg_read_xfer, &reg_read_message);
+}
+
+static int __at86rf215_reg_read(struct spi_device *spi, u16 reg_addr)
+{
+	int ret = -1;
+
+	*((u16 *)tx_buf) = htons(reg_addr) | ;
+	ret = spi_async(spi, &reg_read_message);
+
+	if (ret < 0) {
+		dev_err(&spi->dev, "register read error\n");
+		return ret;
+	}
+
+	return 0;
+}
+#endif
+
+/*
+ * static int at86rf215_regmap_read(struct spi_device *spi, unsigned int addr,
+ * 				 unsigned int *val)
+ * {
+ * 	return regmap_read(regmap, addr, val);
+ * }
+ */
+
 static int at86rf215_probe(struct spi_device *spi)
 {
-	unsigned long flags;
-	struct regmap *regmap;
+	/* unsigned long flags = 0; */
 
 	if (!spi->irq) {
 		dev_err(&spi->dev, "no IRQ number\n");
@@ -165,8 +309,18 @@ static int at86rf215_probe(struct spi_device *spi)
 		return -1;
 	}
 
+
+	timer_setup(&ping_timer, ping_process, 0);
+
+	ping_process(NULL);
+
+	/* regmap_read(regmap, RG_RF_PN, &val); */
+
+	/* reg_read_message_init(); */
+
 	/* TODO: datasheet section 7.2.1 common configuration */
 
+#if 0
 	/* TODO: read IRQ status reg to reset line */
 	flags = irq_get_trigger_type(spi->irq);
 	if (!flags)
@@ -180,18 +334,17 @@ static int at86rf215_probe(struct spi_device *spi)
 	}
 
 	disable_irq(spi->irq);
-
-	timer_setup(&ping_timer, ping_process, 0);
-	
-	ping_process(NULL);
+#endif
 
 	return 0;
 }
 
 static int at86rf215_remove(struct spi_device *spi)
 {
+#if 0
 	devm_free_irq(&spi->dev, spi->irq, &at86rf215_cookie);
 	devm_gpio_free(&spi->dev, rstn_pin_num);
+#endif
 
 	return 0;
 }
