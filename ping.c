@@ -341,6 +341,8 @@ static int at86rf215_probe(struct spi_device *spi)
 
 static int at86rf215_remove(struct spi_device *spi)
 {
+	if (del_timer(&ping_timer))
+		pr_debug("deactivated active timer\n");
 #if 0
 	devm_free_irq(&spi->dev, spi->irq, &at86rf215_cookie);
 	devm_gpio_free(&spi->dev, rstn_pin_num);
