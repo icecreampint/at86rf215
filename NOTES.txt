@@ -1,3 +1,20 @@
+uncrustify -c ~/making/zephyr/.uncrustify.cfg --replace ping.c
+
+
+AT86RF215 Channel Configuration
+
+OFDM Option1 in in the 902–928 frequency band
+
+ChanSpacing: 1.2 MHz
+TotalNumChan: 20
+ChanCenterFreq0: 903.2 Mhz
+
+Center frequency for channel 3 is 906.8 according to
+
+ChanCenterFreq = ChanCenterFreq0 + NumChan × ChanSpacing
+
+
+
 
 Do NOT enable SPI in Raspberry Pi boot config file 
 
