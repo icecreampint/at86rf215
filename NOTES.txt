@@ -1,3 +1,9 @@
+On the RPi, interrupt GPIO is BCM 23
+
+
+
+
+
 uncrustify -c ~/making/zephyr/.uncrustify.cfg --replace ping.c
 
 

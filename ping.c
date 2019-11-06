@@ -83,7 +83,7 @@ static struct timer_list ping_timer;
 /* RSTN pin number */
 static int rstn_pin_num;
 
-/* static int at86rf215_cookie = 0xbabef00d; */
+static int at86rf215_cookie = 0xbabef00d;
 
 static struct regmap *regmap;
 
@@ -92,6 +92,7 @@ static bool at86rf215_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
 	case RG_RF09_IRQM:
+	case RG_RF09_CMD:
 	case RG_RF09_CS:
 	case RG_RF09_CCF0L:
 	case RG_RF09_CCF0H:
@@ -125,6 +126,8 @@ static bool at86rf215_readable_reg(struct device *dev, unsigned int reg)
 	}
 
 	switch (reg) {
+	case RG_RF09_IRQS:
+	case RG_RF24_IRQS:
 	case RG_RF_PN:
 	case RG_RF_VN:
 	case RG_RF09_STATE:
@@ -140,6 +143,8 @@ static bool at86rf215_readable_reg(struct device *dev, unsigned int reg)
 static bool at86rf215_volatile_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
+	case RG_RF09_IRQS:
+	case RG_RF24_IRQS:
 	case RG_RF_PN:  /* TODO: remove */
 	case RG_RF_VN:  /* TODO: remove */
 	case RG_RF09_STATE:
@@ -157,7 +162,7 @@ static bool at86rf215_volatile_reg(struct device *dev, unsigned int reg)
 static bool at86rf215_precious_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
-	case RG_RF09_IRQS:
+	/* case RG_RF09_IRQS: */
 	case RG_BBC0_IRQS:
 		return true;
 
@@ -194,12 +199,13 @@ static int at86rf215_get_platform_data(struct spi_device *spi,
 	return 0;
 }
 
-#if 0
 static irqreturn_t at86rf215_irq_handler(int irq, void *data)
 {
+	disable_irq_nosync(irq);
+
+	printk("%s: 0x%x\n", __func__, *(int *)data);
 	return IRQ_HANDLED;
 }
-#endif
 
 static void at86rf215_configure(void)
 {
@@ -306,6 +312,13 @@ static void at86rf215_configure(void)
 		return;
 	}
 
+	/* Initiate transceiver state change */
+	ret = regmap_write(regmap, RG_RF09_CMD, RF_TXPREP);
+	if (ret < 0) {
+		pr_err("can't write command\n");
+		return;
+	}
+
 	is_configured = true;
 }
 
@@ -325,7 +338,7 @@ static void ping_process(struct timer_list *t)
 		pr_debug("configuring transceiver...");
 		at86rf215_configure();
 	} else {
-		pr_debug("transceiver is already configured");
+		/* pr_debug("transceiver is already configured"); */
 	}
 
 #if 0
@@ -369,7 +382,7 @@ static void ping_process(struct timer_list *t)
 	}
 #endif
 
-	mod_timer(&ping_timer, jiffies + msecs_to_jiffies(5000));
+	mod_timer(&ping_timer, jiffies + msecs_to_jiffies(1000));
 }
 
 #if 0
@@ -423,7 +436,10 @@ static int __at86rf215_reg_read(struct spi_device *spi, u16 reg_addr)
 
 static int at86rf215_probe(struct spi_device *spi)
 {
-        /* unsigned long flags = 0; */
+	unsigned int val;
+        unsigned long irqflags = 0;
+
+	(void)val;
 
 	if (!spi->irq) {
 		dev_err(&spi->dev, "no IRQ number\n");
@@ -464,30 +480,31 @@ static int at86rf215_probe(struct spi_device *spi)
 
 	timer_setup(&ping_timer, ping_process, 0);
 
-	ping_process(NULL);
+	/* Read IRQ status regs to reset line */
+	regmap_read(regmap, RG_RF09_IRQS, &val);
+	regmap_read(regmap, RG_RF24_IRQS, &val);
 
-        /* regmap_read(regmap, RG_RF_PN, &val); */
+	ping_process(NULL);
 
         /* reg_read_message_init(); */
 
         /* TODO: datasheet section 7.2.1 common configuration */
 
-#if 0
-        /* TODO: read IRQ status reg to reset line */
-	flags = irq_get_trigger_type(spi->irq);
-	if (!flags) {
-		flags = IRQF_TRIGGER_HIGH;
+	irqflags = irq_get_trigger_type(spi->irq);
+	dev_dbg(&spi->dev, "irqflags 0x%lx\n", irqflags);
+	if (!irqflags) {
+		irqflags = IRQF_TRIGGER_HIGH;
 	}
 
 	if (devm_request_irq(&spi->dev, spi->irq, at86rf215_irq_handler,
-			     IRQF_SHARED | flags,
+			     IRQF_SHARED | irqflags,
 			     dev_name(&spi->dev), &at86rf215_cookie) < 0) {
+		dev_err(&spi->dev, "can't allocate IRQ\n");
 		devm_gpio_free(&spi->dev, rstn_pin_num);
 		return -1;
 	}
 
-	disable_irq(spi->irq);
-#endif
+	/* disable_irq(spi->irq); */
 
 	return 0;
 }
@@ -497,10 +514,9 @@ static int at86rf215_remove(struct spi_device *spi)
 	if (del_timer(&ping_timer)) {
 		pr_debug("deactivated active timer\n");
 	}
-#if 0
+
 	devm_free_irq(&spi->dev, spi->irq, &at86rf215_cookie);
 	devm_gpio_free(&spi->dev, rstn_pin_num);
-#endif
 
 	return 0;
 }

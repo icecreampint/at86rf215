@@ -1,4 +1,5 @@
 #define RG_RF09_IRQS                    (0x00)
+#define RG_RF24_IRQS                    (0x01)
 #define RG_BBC0_IRQS                    (0x02)
 #define RG_RF_RST                       (0x05)
 #define RG_RF_CFG                       (0x06)
