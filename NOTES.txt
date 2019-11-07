@@ -1,3 +1,9 @@
+For now we don't care for the 2.4 GHz radio and associated baseband core. The
+only exception is when we clear the IRQ line at initialization for which we need
+to read the 2.4 GHz radio IRQ status register.
+
+
+
 On the RPi, interrupt GPIO is BCM 23
 
 

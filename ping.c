@@ -46,6 +46,11 @@ static const struct trx_state {
 };
 #define num_of_trx_states (sizeof(trx_states) / sizeof(trx_states[0])
 
+struct irqs_read_buf_pair {
+	u8 rx_buf[3];
+	u8 tx_buf[3];
+};
+
 static struct at86rf215_priv {
 	struct spi_device *spi;
 	struct spi_message msg;
@@ -53,6 +58,15 @@ static struct at86rf215_priv {
 	u8 rx_buf[3];
 	u8 tx_buf[3];
 	int cookie;
+
+	/* 
+	 * IRQ status read messages for the sub-1Ghz and 2.4GHz radios and their
+	 * respective basebands.
+	 */
+	struct irqs_read_buf_pair irqs_read_buf_pairs[4];
+	struct spi_transfer irqs_read_xfers[4];
+	struct spi_message irqs_read_msgs[4];
+
 } at86rf215_priv = { .cookie = 0xbabef00d };
 
 static struct at86rf215_priv *priv = &at86rf215_priv;
@@ -198,20 +212,60 @@ static int at86rf215_get_platform_data(struct spi_device *spi,
 	return 0;
 }
 
-static void dummy_complete(void *context)
+static void rf09_irqs_read_complete(void *context)
 {
-	printk("peekaboo\n");
+	struct at86rf215_priv *priv = context;
+
+	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
+	       in_interrupt() ? "yes" : "no", priv->cookie);
 }
 
-static u8 dummy_tx_buf[3];
+static void rf24_irqs_read_complete(void *context)
+{
+	struct at86rf215_priv *priv = context;
 
-static u8 dummy_rx_buf[3];
+	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
+	       in_interrupt() ? "yes" : "no", priv->cookie);
+}
 
-static struct spi_transfer dummy_xfer = {
-	.len = 3,
+static void bbc0_irqs_read_complete(void *context)
+{
+	struct at86rf215_priv *priv = context;
+
+	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
+	       in_interrupt() ? "yes" : "no", priv->cookie);
+}
+
+static void bbc1_irqs_read_complete(void *context)
+{
+	struct at86rf215_priv *priv = context;
+
+	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
+	       in_interrupt() ? "yes" : "no", priv->cookie);
+}
+
+static void (*irqs_read_complete_funcs[]) = {
+	rf09_irqs_read_complete,
+	rf24_irqs_read_complete,
+	bbc0_irqs_read_complete,
+	bbc1_irqs_read_complete
 };
 
-static struct spi_message dummy_msg;
+static void at86rf215_irqs_read_msg_init(struct at86rf215_priv *priv,
+					 u16 addr)
+{
+	priv->irqs_read_buf_pairs[addr].tx_buf[0] = (addr >> 8) & 0x3F;
+	priv->irqs_read_buf_pairs[addr].tx_buf[1] = addr & 0xFF;
+
+	priv->irqs_read_xfers[addr].tx_buf = &priv->irqs_read_buf_pairs[addr].tx_buf[0];
+	priv->irqs_read_xfers[addr].rx_buf = &priv->irqs_read_buf_pairs[addr].rx_buf[0];
+	priv->irqs_read_xfers[addr].len = sizeof(priv->irqs_read_buf_pairs[addr].tx_buf);
+
+	spi_message_init(&priv->irqs_read_msgs[addr]);
+	priv->irqs_read_msgs[addr].complete = irqs_read_complete_funcs[addr];
+	priv->irqs_read_msgs[addr].context = priv;
+	spi_message_add_tail(&priv->irqs_read_xfers[addr], &priv->irqs_read_msgs[addr]);
+}
 
 static irqreturn_t at86rf215_irq_handler(int irq, void *data)
 {
@@ -220,16 +274,18 @@ static irqreturn_t at86rf215_irq_handler(int irq, void *data)
 
 	(void)ret;
 
+	printk("%s in_interrupt: %s\n", __func__,
+	       in_interrupt() ? "yes" : "no");
+
 	disable_irq_nosync(irq);
 
-	dummy_tx_buf[0] = (RG_RF09_IRQS >> 8) & 0x3F;
-	dummy_tx_buf[1] = RG_RF09_IRQS & 0xFF;
-
-	printk("%s: 0x%x\n", __func__, priv->cookie);
+	/* printk("%s: 0x%x\n", __func__, priv->cookie); */
 
         /* dev_dbg(&priv->spi->dev, "sth"); */
 
-	spi_async(priv->spi, &dummy_msg);
+	/* TODO: check ret value and take appropriate action */
+	spi_async(priv->spi, &priv->irqs_read_msgs[RG_RF09_IRQS]);
+	spi_async(priv->spi, &priv->irqs_read_msgs[RG_BBC0_IRQS]);
 
 	return IRQ_HANDLED;
 }
@@ -511,12 +567,9 @@ static int at86rf215_probe(struct spi_device *spi)
 	regmap_read(regmap, RG_RF09_IRQS, &val);
 	regmap_read(regmap, RG_RF24_IRQS, &val);
 
-	dummy_xfer.tx_buf = &dummy_tx_buf[0];
-	dummy_xfer.rx_buf = &dummy_rx_buf[0];
-
-	spi_message_init(&dummy_msg);
-	dummy_msg.complete = dummy_complete;
-	spi_message_add_tail(&dummy_xfer, &dummy_msg);
+	/* Initialize IRQ status read message for radios and basebands */
+	at86rf215_irqs_read_msg_init(priv, RG_RF09_IRQS);
+	at86rf215_irqs_read_msg_init(priv, RG_BBC0_IRQS);
 
 	ping_process(NULL);
 
