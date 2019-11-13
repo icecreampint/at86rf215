@@ -9,6 +9,90 @@
 
 #include "reg.h"
 
+#define NUM_TRX 2
+
+/** Enumeration for RF commands and states used for trx command and state
+ * registers */
+typedef enum rf_cmd_status_tag {
+	/** Constant RF_TRXOFF for sub-register @ref SR_CMD */
+	STATUS_RF_TRXOFF =                         (0x2),
+
+	/** Constant RF_TXPREP for sub-register @ref SR_CMD */
+	STATUS_RF_TXPREP =                         (0x3),
+
+	/** Constant RF_TX for sub-register @ref SR_CMD */
+	STATUS_RF_TX =                             (0x4),
+
+	/** Constant RF_RX for sub-register @ref SR_CMD */
+	STATUS_RF_RX =                             (0x5),
+
+	/** Constant RF_RX for sub-register @ref SR_CMD */
+	STATUS_RF_TRANSITION =                      (0x6),
+
+	/** Constant RF_RESET for sub-register @ref SR_CMD */
+	STATUS_RF_RESET =                          (0x7)
+} rf_cmd_status_t;
+
+/** Enumeration for RF IRQs used for IRQS and IRQM registers */
+typedef enum rf_irq_tag {
+	/** Constant RF_IRQ_IQIFSF for sub-register @ref SR_IQIFSF */
+	RF_IRQ_IQIFSF =                     (0x20),
+
+	/** Constant RF_IRQ_TRXERR for sub-register @ref SR_TRXERR */
+	RF_IRQ_TRXERR =                     (0x10),
+
+	/** Constant RF_IRQ_BATLOW for sub-register @ref SR_BATLOW */
+	RF_IRQ_BATLOW =                     (0x08),
+
+	/** Constant RF_IRQ_EDC for sub-register @ref SR_EDC */
+	RF_IRQ_EDC =                        (0x04),
+
+	/** Constant RF_IRQ_TRXRDY for sub-register @ref SR_TRXRDY */
+	RF_IRQ_TRXRDY =                     (0x02),
+
+	/** Constant RF_IRQ_WAKEUP for sub-register @ref SR_WAKEUP */
+	RF_IRQ_WAKEUP =                     (0x01),
+
+	/** No interrupt is indicated by IRQ_STATUS register */
+	RF_IRQ_NO_IRQ =                     (0x00),
+
+	/** All interrupts are indicated by IRQ_STATUS register */
+	RF_IRQ_ALL_IRQ =                    (0x3F)
+} rf_irq_t;
+
+/** Enumeration for BB IRQs */
+typedef enum bb_irq_tag {
+	/** Constant BB_IRQ_FBLI for sub-register @ref SR_FBLI */
+	BB_IRQ_FBLI =                       (0x80),
+
+	/** Constant BB_IRQ_AGCR for sub-register @ref SR_AGCR */
+	BB_IRQ_AGCR =                       (0x40),
+
+	/** Constant BB_IRQ_AGCH for sub-register @ref SR_AGCH */
+	BB_IRQ_AGCH =                       (0x20),
+
+	/** Constant BB_IRQ_TXFE for sub-register @ref SR_TXFE */
+	BB_IRQ_TXFE =                       (0x10),
+
+	/** Constant BB_IRQ_RXEM for sub-register @ref SR_RXEM */
+	BB_IRQ_RXEM =                       (0x08),
+
+	/** Constant BB_IRQ_RXAM for sub-register @ref SR_RXAM */
+	BB_IRQ_RXAM =                       (0x04),
+
+	/** Constant BB_IRQ_RXFE for sub-register @ref SR_RXFE */
+	BB_IRQ_RXFE =                       (0x02),
+
+	/** Constant BB_IRQ_RXFS for sub-register @ref SR_RXFS */
+	BB_IRQ_RXFS =                       (0x01),
+
+	/** No interrupt is indicated by IRQ_STATUS register */
+	BB_IRQ_NO_IRQ =                     (0x00),
+
+	/** All interrupts are indicated by IRQ_STATUS register */
+	BB_IRQ_ALL_IRQ =                    (0xFF)
+} bb_irq_t;
+
 static bool is_configured;
 
 enum { AT86RF215 = 0x34, AT86RF215IQ, AT86RF215M };
@@ -46,27 +130,9 @@ static const struct trx_state {
 };
 #define num_of_trx_states (sizeof(trx_states) / sizeof(trx_states[0])
 
-struct irqs_read_buf_pair {
-	u8 rx_buf[3];
-	u8 tx_buf[3];
-};
-
 static struct at86rf215_priv {
 	struct spi_device *spi;
-	struct spi_message msg;
-	struct spi_transfer xfer;
-	u8 rx_buf[3];
-	u8 tx_buf[3];
 	int cookie;
-
-        /*
-         * IRQ status read messages for the sub-1Ghz and 2.4GHz radios and their
-         * respective basebands.
-         */
-	struct irqs_read_buf_pair irqs_read_buf_pairs[4];
-	struct spi_transfer irqs_read_xfers[4];
-	struct spi_message irqs_read_msgs[4];
-
 } at86rf215_priv = { .cookie = 0xbabef00d };
 
 static struct at86rf215_priv *priv = &at86rf215_priv;
@@ -79,53 +145,214 @@ enum { CMD_NOP,
        CMD_RX,
        CMD_RESET = 0x7 };
 
-static u8 dummy_read_tx_buf[2];
-static u8 dummy_read_rx_buf[2047];
-static struct spi_message dummy_read_msg;
-static struct spi_transfer dummy_read_xfers[2];
+/* SPI block read access data structures and functions */
+static u8 trx_read_tx_buf[2];
+static volatile u8 trx_read_rx_buf[2047];
+static struct spi_message trx_read_msg;
+static struct spi_transfer trx_read_xfers[2];
 
-static void dummy_read_msg_complete(void *context)
+
+static struct {
+	const char *names[4];
+	u8 values[4];
+} at86rf215_irqs = {
+	{ "RF09_IRQS", "RF24_IRQS", "BBC0_IRQS",  "BBC1_IRQS" },
+	{ 0 }
+};
+
+/** Sub-registers of Register @ref IRQS */
+/** Bit Mask for Sub-Register IRQS.WAKEUP */
+#define IRQS_WAKEUP_MASK                0x01
+/** Bit Offset for Sub-Register IRQS.WAKEUP */
+#define IRQS_WAKEUP_SHIFT               0
+
+/** Bit Mask for Sub-Register IRQS.TRXRDY */
+#define IRQS_TRXRDY_MASK                0x02
+/** Bit Offset for Sub-Register IRQS.TRXRDY */
+#define IRQS_TRXRDY_SHIFT               1
+
+/** Bit Mask for Sub-Register IRQS.EDC */
+#define IRQS_EDC_MASK                   0x04
+/** Bit Offset for Sub-Register IRQS.EDC */
+#define IRQS_EDC_SHIFT                  2
+
+/** Bit Mask for Sub-Register IRQS.BATLOW */
+#define IRQS_BATLOW_MASK                0x08
+/** Bit Offset for Sub-Register IRQS.BATLOW */
+#define IRQS_BATLOW_SHIFT               3
+
+/** Bit Mask for Sub-Register IRQS.TRXERR */
+#define IRQS_TRXERR_MASK                0x10
+/** Bit Offset for Sub-Register IRQS.TRXERR */
+#define IRQS_TRXERR_SHIFT               4
+
+/** Bit Mask for Sub-Register IRQS.IQIFSF */
+#define IRQS_IQIFSF_MASK                0x20
+/** Bit Offset for Sub-Register IRQS.IQIFSF */
+#define IRQS_IQIFSF_SHIFT               5
+
+#define RF_IRQS_MAX_SHIFT		IRQS_IQIFSF_SHIFT
+
+/** Sub-registers of Register @ref IRQS */
+/** Bit Mask for Sub-Register IRQS.RXFS */
+#define IRQS_RXFS_MASK                  0x01
+/** Bit Offset for Sub-Register IRQS.RXFS */
+#define IRQS_RXFS_SHIFT                 0
+
+/** Bit Mask for Sub-Register IRQS.RXFE */
+#define IRQS_RXFE_MASK                  0x02
+/** Bit Offset for Sub-Register IRQS.RXFE */
+#define IRQS_RXFE_SHIFT                 1
+
+/** Bit Mask for Sub-Register IRQS.RXAM */
+#define IRQS_RXAM_MASK                  0x04
+/** Bit Offset for Sub-Register IRQS.RXAM */
+#define IRQS_RXAM_SHIFT                 2
+
+/** Bit Mask for Sub-Register IRQS.RXEM */
+#define IRQS_RXEM_MASK                  0x08
+/** Bit Offset for Sub-Register IRQS.RXEM */
+#define IRQS_RXEM_SHIFT                 3
+
+/** Bit Mask for Sub-Register IRQS.TXFE */
+#define IRQS_TXFE_MASK                  0x10
+/** Bit Offset for Sub-Register IRQS.TXFE */
+#define IRQS_TXFE_SHIFT                 4
+
+/** Bit Mask for Sub-Register IRQS.AGCH */
+#define IRQS_AGCH_MASK                  0x20
+/** Bit Offset for Sub-Register IRQS.AGCH */
+#define IRQS_AGCH_SHIFT                 5
+
+/** Bit Mask for Sub-Register IRQS.AGCR */
+#define IRQS_AGCR_MASK                  0x40
+/** Bit Offset for Sub-Register IRQS.AGCR */
+#define IRQS_AGCR_SHIFT                 6
+
+/** Bit Mask for Sub-Register IRQS.FBLI */
+#define IRQS_FBLI_MASK                  0x80
+/** Bit Offset for Sub-Register IRQS.FBLI */
+#define IRQS_FBLI_SHIFT                 7
+
+#define BB_IRQS_MAX_SHIFT		IRQS_FBLI_SHIFT
+
+static void at86rf215_rf_irqs_print(const char *name, u8 val)
 {
-	struct at86rf215_priv *priv = context;
+	char str[RF_IRQS_MAX_SHIFT + 2];
+	str[RF_IRQS_MAX_SHIFT + 1] = '\0';
 
-	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
-	       in_interrupt() ? "yes" : "no", priv->cookie);
-
-	print_hex_dump_bytes("", DUMP_PREFIX_NONE, dummy_read_rx_buf, 4);
+	printk("\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+	       "             _------==> IQIFSF",
+	       "            / _-----==> TRXERR",
+	       "           | / _----==> BATLOW",
+	       "           || / _---==> EDC",
+	       "           ||| / _--==> TRXRDY",
+	       "           |||| / _-==> WAKEUP",
+	       "           ||||| /",
+	       "           ||||||"
+		);
+	str[RF_IRQS_MAX_SHIFT - IRQS_WAKEUP_SHIFT] =
+		val & IRQS_WAKEUP_MASK ? '1' : '.';
+	str[RF_IRQS_MAX_SHIFT - IRQS_TRXRDY_SHIFT] =
+		val & IRQS_TRXRDY_MASK ? '1' : '.';
+	str[RF_IRQS_MAX_SHIFT - IRQS_EDC_SHIFT] =
+		val & IRQS_EDC_MASK ? '1' : '.';
+	str[RF_IRQS_MAX_SHIFT - IRQS_BATLOW_SHIFT] =
+		val & IRQS_BATLOW_MASK ? '1' : '.';
+	str[RF_IRQS_MAX_SHIFT - IRQS_TRXERR_SHIFT] =
+		val & IRQS_TRXERR_MASK ? '1' : '.';
+	str[RF_IRQS_MAX_SHIFT - IRQS_IQIFSF_SHIFT] =
+		val & IRQS_IQIFSF_MASK ? '1' : '.';
+	printk("%s  %s\n", name, str);
 }
 
-static void at86rf215_trx_read(struct at86rf215_priv *priv, u16 addr, u8 *data,
-			       size_t len)
+static void at86rf215_bb_irqs_print(const char *name, u8 val)
+{
+	char str[BB_IRQS_MAX_SHIFT + 2];
+	str[BB_IRQS_MAX_SHIFT + 1] = '\0';
+
+	printk("\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+	       "             _--------==> FBLI",
+	       "            / _-------==> AGCR",
+	       "           | / _------==> AGCH",
+	       "           || / _-----==> TXFE",
+	       "           ||| / _----==> RXEM",
+	       "           |||| / _---==> RXAM",
+	       "           ||||| / _--==> RXFE",
+	       "           |||||| / _-==> RXFS",
+	       "           ||||||| /",
+	       "           ||||||||");
+	str[BB_IRQS_MAX_SHIFT - IRQS_RXFS_SHIFT] =
+		val & IRQS_RXFS_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_RXFE_SHIFT] =
+		val & IRQS_RXFE_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_RXAM_SHIFT] =
+		val & IRQS_RXAM_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_RXEM_SHIFT] =
+		val & IRQS_RXEM_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_TXFE_SHIFT] =
+		val & IRQS_TXFE_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_AGCH_SHIFT] =
+		val & IRQS_AGCH_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_AGCR_SHIFT] =
+		val & IRQS_AGCR_MASK ? '1' : '.';
+	str[BB_IRQS_MAX_SHIFT - IRQS_FBLI_SHIFT] =
+		val & IRQS_FBLI_MASK ? '1' : '.';
+	printk("%s  %s\n", name, str);
+}
+
+static void at86rf215_irqs_read_complete(void *context)
+{
+	struct at86rf215_priv *priv = context;
+	int i;
+
+	(void)priv;
+
+	for (i = 0; i < NUM_TRX; i++) {
+		/* if (at86rf215_irqs.values[i]) */
+			at86rf215_rf_irqs_print(at86rf215_irqs.names[i],
+						at86rf215_irqs.values[i]);
+
+		/* if (at86rf215_irqs.values[i + 2]) */
+			at86rf215_bb_irqs_print(at86rf215_irqs.names[i + 2],
+						at86rf215_irqs.values[i + 2]);
+	}
+}
+
+static void at86rf215_trx_read(struct at86rf215_priv *priv, u16 addr,
+			       u8 *data, size_t len,
+			       void (*complete)(void *context))
 {
         /* The first transfer carries the two command bytes */
-	dummy_read_xfers[0].len = 2;
-	dummy_read_tx_buf[0] = addr >> 8;
-	dummy_read_tx_buf[1] = addr;
-	dummy_read_xfers[0].tx_buf = &dummy_read_tx_buf[0];
-	dummy_read_xfers[0].rx_buf = NULL;
+	trx_read_xfers[0].len = 2;
+	trx_read_tx_buf[0] = addr >> 8;
+	trx_read_tx_buf[1] = addr;
+	trx_read_xfers[0].tx_buf = &trx_read_tx_buf[0];
+	trx_read_xfers[0].rx_buf = NULL;
 
         /*
          * The second transfer reads payload. According to the SPI API
          * documentation, the chip select normally remains active until after
          * the last transfer in a message.
          */
-	dummy_read_xfers[1].len = len;
-	dummy_read_xfers[1].tx_buf = NULL;
-	dummy_read_xfers[1].rx_buf = data;
+	trx_read_xfers[1].len = len;
+	trx_read_xfers[1].tx_buf = NULL;
+	trx_read_xfers[1].rx_buf = data;
 
-	spi_message_init_with_transfers(&dummy_read_msg, dummy_read_xfers,
-					sizeof(dummy_read_xfers) / sizeof(dummy_read_xfers[0]));
-	dummy_read_msg.complete = dummy_read_msg_complete;
-	dummy_read_msg.context = priv;
+	spi_message_init_with_transfers(&trx_read_msg, trx_read_xfers,
+					sizeof(trx_read_xfers) / sizeof(trx_read_xfers[0]));
+	trx_read_msg.complete = complete;
+	trx_read_msg.context = priv;
 
-	spi_async(priv->spi, &dummy_read_msg);
+	spi_async(priv->spi, &trx_read_msg);
 }
 
-static u8 dummy_write_tx_buf[2047 + 2];
-static struct spi_message dummy_write_msg;
-static struct spi_transfer dummy_write_xfers[2];
+/* SPI block write access data structures and functions */
+static u8 trx_write_tx_buf[2047 + 2];
+static struct spi_message trx_write_msg;
+static struct spi_transfer trx_write_xfers[2];
 
-static void dummy_write_msg_complete(void *context)
+static void at86rf215_trx_write_complete(void *context)
 {
 	struct at86rf215_priv *priv = context;
 
@@ -137,44 +364,51 @@ static void at86rf215_trx_write(struct at86rf215_priv *priv, u16 addr, u8 *data,
 				size_t len)
 {
         /* The first transfer carries the two command bytes */
-	dummy_write_xfers[0].len = 2;
-	dummy_write_tx_buf[0] = (addr >> 8) | 0x8000;
-	dummy_write_tx_buf[1] = addr;
-	dummy_write_xfers[0].tx_buf = &dummy_write_tx_buf[0];
-	dummy_write_xfers[0].rx_buf = NULL;
+	trx_write_xfers[0].len = 2;
+	trx_write_tx_buf[0] = (addr >> 8) | 0x8000;
+	trx_write_tx_buf[1] = addr;
+	trx_write_xfers[0].tx_buf = &trx_write_tx_buf[0];
+	trx_write_xfers[0].rx_buf = NULL;
 
         /*
          * The second transfer writes payload. According to the SPI API
          * documentation, the chip select normally remains active until after
          * the last transfer in a message.
          */
-	dummy_write_xfers[1].len = len;
-	dummy_write_xfers[1].tx_buf = data;
-	dummy_write_xfers[1].rx_buf = NULL;
+	trx_write_xfers[1].len = len;
+	trx_write_xfers[1].tx_buf = data;
+	trx_write_xfers[1].rx_buf = NULL;
 
-	spi_message_init_with_transfers(&dummy_write_msg, dummy_write_xfers,
-					sizeof(dummy_write_xfers) / sizeof(dummy_write_xfers[0]));
-	dummy_write_msg.complete = dummy_write_msg_complete;
-	dummy_write_msg.context = priv;
+	spi_message_init_with_transfers(&trx_write_msg, trx_write_xfers,
+					sizeof(trx_write_xfers) / sizeof(trx_write_xfers[0]));
+	trx_write_msg.complete = at86rf215_trx_write_complete;
+	trx_write_msg.context = priv;
 
-	spi_async(priv->spi, &dummy_write_msg);
+	spi_async(priv->spi, &trx_write_msg);
 }
 
-static void at86rf215_reg_read_complete(void *context)
+/*
+ * TODO: confirm that it's preferable to allocate context on the heap. Make sure to free allocated
+ * memory!
+ */
+static irqreturn_t at86rf215_irq_handler(int irq, void *data)
 {
-}
+	struct at86rf215_priv *priv = data;
 
-#if 0
-static void at86rf215_reg_read(u16 addr, u8 val)
-{
-	int ret;
+	printk("%s in_interrupt: %s\n", __func__,
+	       in_interrupt() ? "yes" : "no");
 
-	ret = spi_async(priv->spi, &priv->msg);
-	if (ret < 0) {
-		dev_err(&priv->spi->dev, "register read error\n");
-	}
+	disable_irq_nosync(irq);
+
+	/* TODO: disable all IRQs on the transceiver by writing BBCx_IRQM and RFx_IRQM */
+
+	/* Read all IRQ status registers. This will clear the interrupt line. */
+	at86rf215_trx_read(priv, RG_RF09_IRQS, &at86rf215_irqs.values[0],
+			   sizeof(at86rf215_irqs.values),
+			   at86rf215_irqs_read_complete);
+
+	return IRQ_HANDLED;
 }
-#endif
 
 static struct timer_list ping_timer;
 
@@ -293,113 +527,6 @@ static int at86rf215_get_platform_data(struct spi_device *spi,
 	*rstn_pin_num = of_get_named_gpio(spi->dev.of_node, "reset-gpio", 0);
 
 	return 0;
-}
-
-#if 0
-static int trx_fsm_handle_irq_event(unsigned short trx_state,
-				    unsigned short event)
-{
-	return 0;
-}
-#endif
-
-static void rf09_irqs_read_complete(void *context)
-{
-	struct at86rf215_priv *priv = context;
-
-	enable_irq(priv->spi->irq);
-
-	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
-	       in_interrupt() ? "yes" : "no", priv->cookie);
-}
-
-static void rf24_irqs_read_complete(void *context)
-{
-	struct at86rf215_priv *priv = context;
-
-	enable_irq(priv->spi->irq);
-
-	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
-	       in_interrupt() ? "yes" : "no", priv->cookie);
-}
-
-static void bbc0_irqs_read_complete(void *context)
-{
-	struct at86rf215_priv *priv = context;
-
-	enable_irq(priv->spi->irq);
-
-	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
-	       in_interrupt() ? "yes" : "no", priv->cookie);
-}
-
-static void bbc1_irqs_read_complete(void *context)
-{
-	struct at86rf215_priv *priv = context;
-
-	enable_irq(priv->spi->irq);
-
-	printk("%s in_interrupt: %s  cookie: 0x%x\n", __func__,
-	       in_interrupt() ? "yes" : "no", priv->cookie);
-}
-
-static void (*irqs_read_complete_funcs[]) = {
-	rf09_irqs_read_complete,
-	rf24_irqs_read_complete,
-	bbc0_irqs_read_complete,
-	bbc1_irqs_read_complete
-};
-
-static void at86rf215_irqs_read_msg_init(struct at86rf215_priv *priv,
-					 u16 addr)
-{
-        /*
-         * priv->irqs_read_buf_pairs[addr].tx_buf[0] = (addr >> 8) & 0x3F;
-         * priv->irqs_read_buf_pairs[addr].tx_buf[1] = addr & 0xFF;
-         */
-
-        /* TODO: test that it works */
-	priv->irqs_read_buf_pairs[addr].tx_buf[0] = addr >> 8;
-	priv->irqs_read_buf_pairs[addr].tx_buf[1] = addr;
-
-	priv->irqs_read_xfers[addr].tx_buf = &priv->irqs_read_buf_pairs[addr].tx_buf[0];
-	priv->irqs_read_xfers[addr].rx_buf = &priv->irqs_read_buf_pairs[addr].rx_buf[0];
-	priv->irqs_read_xfers[addr].len = sizeof(priv->irqs_read_buf_pairs[addr].tx_buf);
-
-	spi_message_init(&priv->irqs_read_msgs[addr]);
-	priv->irqs_read_msgs[addr].complete = irqs_read_complete_funcs[addr];
-	priv->irqs_read_msgs[addr].context = priv;
-	spi_message_add_tail(&priv->irqs_read_xfers[addr], &priv->irqs_read_msgs[addr]);
-}
-
-/*
- * TODO: confirm that it's preferable to allocate context on the heap. Make sure to free allocated
- * memory!
- */
-static irqreturn_t at86rf215_irq_handler(int irq, void *data)
-{
-	struct at86rf215_priv *priv = data; int ret;
-
-	(void)ret;
-
-	printk("%s in_interrupt: %s\n", __func__,
-	       in_interrupt() ? "yes" : "no");
-
-	disable_irq_nosync(irq);
-
-        /* printk("%s: 0x%x\n", __func__, priv->cookie); */
-
-        /* dev_dbg(&priv->spi->dev, "sth"); */
-
-#if 1
-	at86rf215_trx_read(priv, RG_RF09_IRQS, dummy_read_rx_buf, 4);
-#else
-        /* Decide wich IRQ status to read based on state information? */
-        /* TODO: check ret value and take appropriate action */
-	spi_async(priv->spi, &priv->irqs_read_msgs[RG_RF09_IRQS]);
-	spi_async(priv->spi, &priv->irqs_read_msgs[RG_BBC0_IRQS]);
-#endif
-	return IRQ_HANDLED;
 }
 
 static void at86rf215_configure(void)
@@ -580,54 +707,6 @@ static void ping_process(struct timer_list *t)
 	mod_timer(&ping_timer, jiffies + msecs_to_jiffies(1000));
 }
 
-#if 0
-/* Register read data structures */
-
-static u8 rx_buf[3];
-static u8 tx_buf[3];
-static struct spi_transfer reg_read_xfer = {
-	.len = 3,
-	.tx_buf = &tx_buf[0],
-	.rx_buf = &rx_buf[0]
-};
-
-static void reg_read_complete(void *context)
-{
-	printk("peekaboo\n");
-}
-
-static struct spi_message reg_read_message;
-
-static void reg_read_message_init(void)
-{
-	spi_message_init(&reg_read_message);
-	reg_read_message.complete = reg_read_complete;
-	spi_message_add_tail(&reg_read_xfer, &reg_read_message);
-}
-
-static int __at86rf215_reg_read(struct spi_device *spi, u16 reg_addr)
-{
-	int ret = -1;
-
-	*((u16 *)tx_buf) = htons(reg_addr) |;
-	ret = spi_async(spi, &reg_read_message);
-
-	if (ret < 0) {
-		dev_err(&spi->dev, "register read error\n");
-		return ret;
-	}
-
-	return 0;
-}
-#endif
-
-/*
- * static int at86rf215_regmap_read(struct spi_device *spi, unsigned int addr,
- *                               unsigned int *val)
- * {
- *      return regmap_read(regmap, addr, val);
- * }
- */
 
 static int at86rf215_probe(struct spi_device *spi)
 {
@@ -670,19 +749,12 @@ static int at86rf215_probe(struct spi_device *spi)
 	}
 
 	priv->spi = spi;
-	spi_message_init(&priv->msg);
-	priv->msg.complete = at86rf215_reg_read_complete;
-	spi_message_add_tail(&priv->xfer, &priv->msg);
 
 	timer_setup(&ping_timer, ping_process, 0);
 
         /* Read IRQ status regs to reset line */
 	regmap_read(regmap, RG_RF09_IRQS, &val);
 	regmap_read(regmap, RG_RF24_IRQS, &val);
-
-        /* Initialize IRQ status read message for radios and basebands */
-	at86rf215_irqs_read_msg_init(priv, RG_RF09_IRQS);
-	at86rf215_irqs_read_msg_init(priv, RG_BBC0_IRQS);
 
 	ping_process(NULL);
 

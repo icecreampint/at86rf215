@@ -1,3 +1,24 @@
+Atmel Performance Analyzer
+
+IRQ handler is defined in
+
+~/making/perf_analyzer/ASF/thirdparty/wireless/avr2025_mac/source/tal/at86rf215/src/tal_irq_handler.
+
+Some processing of the IRQ status is performed in the handler but some if
+deferred to the TAL task by updating a volatile variable that holds the latest
+register value.
+
+SPI read/write routines are defined in
+
+~/making/perf_analyzer/ASF/thirdparty/wireless/services/trx_access/trx_access_2.c
+
+The TAL task function is defined in
+
+~/making/perf_analyzer/ASF/thirdparty/wireless/avr2025_mac/source/tal/at86rf215/src/tal.c
+
+
+
+
 For now we don't care for the 2.4 GHz radio and associated baseband core. The
 only exception is when we clear the IRQ line at initialization for which we need
 to read the 2.4 GHz radio IRQ status register.
